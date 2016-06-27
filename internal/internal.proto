@@ -1,0 +1,6 @@
+package internal;
+
+message User {
+	optional int64  ID       = 1;
+	optional string Username = 2;
+}
