@@ -54,22 +54,72 @@ func (s *Store) Open() error {
 	}
 	s.db = db
 
-	// Initialize buckets to guarantee that they exist.
-	if err := s.db.Update(func(tx *bolt.Tx) error {
-		tx.CreateBucketIfNotExists([]byte("Users"))
-
-		return nil
-	}); err != nil {
-		db.Close()
-		return err
+	// Start a writable transaction.
+	tx, err := s.db.Begin(true)
+	if err != nil {
+		return nil, err
 	}
+	defer tx.Rollback()
 
-	return nil
+	// Initialize buckets to guarantee that they exist.
+	tx.CreateBucketIfNotExists([]byte("Users"))
+
+	// Commit the transaction.
+	return tx.Commit()
 }
 
 // Close shuts down the store.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// User retrieves a user by ID.
+func (s *Store) User(id int) (*User, error) {
+	// Start a readable transaction.
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Read encoded user bytes.
+	v := tx.Bucket([]byte("Users")).Get(itob(id))
+	if v == nil {
+		return nil, nil
+	}
+
+	// Unmarshal bytes into a user.
+	var u User
+	if err := u.UnmarshalBinary(v); err != nil {
+		return nil, err
+	}
+
+	return &u, nil
+}
+
+// Users retrieves a list of all users.
+func (s *Store) Users() ([]*User, error) {
+	// Start a readable transaction.
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Create a cursor on the user's bucket.
+	c := tx.Bucket([]byte("Users")).Cursor()
+
+	// Read all users into a slice.
+	var a []*User
+	for k, v := c.First(); k != nil; k, v = c.Next() {
+		var u User
+		if err := u.UnmarshalBinary(v); err != nil {
+			return nil, err
+		}
+		a = append(a, &u)
+	}
+
+	return a, nil
 }
 
 // CreateUser creates a new user in the store.
@@ -83,10 +133,10 @@ func (s *Store) CreateUser(u *User) error {
 	defer tx.Rollback()
 
 	// Retrieve bucket.
-	b := tx.Bucket([]byte("Users"))
+	bkt := tx.Bucket([]byte("Users"))
 
 	// The sequence is an autoincrementing integer that is transactionally safe.
-	seq, _ := b.NextSequence()
+	seq, _ := bkt.NextSequence()
 	u.ID = int(seq)
 
 	// Marshal our user into bytes.
@@ -96,7 +146,7 @@ func (s *Store) CreateUser(u *User) error {
 	}
 
 	// Save user to the bucket.
-	if err := b.Put(itob(u.ID), buf); err != nil {
+	if err := bkt.Put(itob(u.ID), buf); err != nil {
 		return err
 	}
 
@@ -104,28 +154,38 @@ func (s *Store) CreateUser(u *User) error {
 	return tx.Commit()
 }
 
-// User retrieves a user by ID.
-func (s *Store) User(id int) (*User, error) {
-	// Start a readable transaction.
-	tx, err := s.db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
+// SetUsername updates the username for a user.
+func (s *Store) SetUsername(id int, username string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bkt := tx.Bucket([]byte("Users"))
 
-	// Read encoded user bytes.
-	buf := tx.Bucket([]byte("Users")).Get(itob(id))
-	if buf == nil {
-		return nil, nil
-	}
+		// Retrieve encoded user and decode.
+		var u User
+		if v := bkt.Get(itob(id)); v == nil {
+			return ErrUserNotFound
+		} else if err := u.UnmarshalBinary(v); err != nil {
+			return err
+		}
 
-	// Unmarshal bytes into a user.
-	var u User
-	if err := u.UnmarshalBinary(buf); err != nil {
-		return nil, err
-	}
+		// Update user.
+		u.Username = username
 
-	return &u, nil
+		// Encode and save user.
+		if buf, err := u.MarshalBinary(); err != nil {
+			return err
+		} else if err := bkt.Put(itob(id), buf); err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
+// DeleteUser removes a user by id.
+func (s *Store) DeleteUser(id int) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("Users")).Delete(itob(id))
+	})
 }
 
 // itob encodes v as a big endian integer.
@@ -134,3 +194,13 @@ func itob(v int) []byte {
 	binary.BigEndian.PutUint64(buf, uint64(v))
 	return buf
 }
+
+// User related errors.
+var (
+	ErrUserNotFound = Error("user not found")
+)
+
+// Error represents an application error.
+type Error string
+
+func (e Error) Error() string { return string(e) }

@@ -31,6 +31,86 @@ func TestStore_CreateUser(t *testing.T) {
 	}
 }
 
+// Ensure store can retrieve multiple users.
+func TestStore_Users(t *testing.T) {
+	s := OpenStore()
+	defer s.Close()
+
+	// Create some users.
+	if err := s.CreateUser(&main.User{Username: "susy"}); err != nil {
+		t.Fatal(err)
+	} else if err := s.CreateUser(&main.User{Username: "john"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify users can be retrieved.
+	if a, err := s.Users(); err != nil {
+		t.Fatal(err)
+	} else if !reflect.DeepEqual(a, []*main.User{
+		{ID: 1, Username: "susy"},
+		{ID: 2, Username: "john"},
+	}) {
+		t.Fatalf("unexpected users: %#v", a)
+	}
+}
+
+// Ensure store can update a user's username.
+func TestStore_SetUsername(t *testing.T) {
+	s := OpenStore()
+	defer s.Close()
+
+	// Create a new user.
+	if err := s.CreateUser(&main.User{Username: "susy"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update username.
+	if err := s.SetUsername(1, "jimbo"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify username has changed.
+	if u, err := s.User(1); err != nil {
+		t.Fatal(err)
+	} else if u.Username != "jimbo" {
+		t.Fatalf("unexpected username: %s", u.Username)
+	}
+}
+
+// Ensure store returns an error if user does not exist.
+func TestStore_SetUsername_ErrUserNotFound(t *testing.T) {
+	s := OpenStore()
+	defer s.Close()
+
+	// Update username.
+	if err := s.SetUsername(1, "jimbo"); err != main.ErrUserNotFound {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Ensure store can remove a user.
+func TestStore_DeleteUser(t *testing.T) {
+	s := OpenStore()
+	defer s.Close()
+
+	// Create a new user.
+	if err := s.CreateUser(&main.User{Username: "susy"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the user.
+	if err := s.DeleteUser(1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify user does not exist.
+	if u, err := s.User(1); err != nil {
+		t.Fatal(err)
+	} else if u != nil {
+		t.Fatalf("unexpected user: %#v", u)
+	}
+}
+
 // Store is a test wrapper for main.Store.
 type Store struct {
 	*main.Store
