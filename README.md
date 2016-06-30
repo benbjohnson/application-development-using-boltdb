@@ -27,7 +27,7 @@ Today I'm going to walk you through building a simple application using a
 pure Go key/value store I wrote called BoltDB.
 
 
-### What is a key/value database?
+### What is a embedded key/value database?
 
 Before we dive in, let's talk about what an embedded key/value store even is!
 "Embedded" refers to the database actually being compiled into your application
@@ -98,7 +98,7 @@ First, it keeps the generated protobufs code separate. And second, the
 hidden from godoc.
 
 Inside our protobuf definition we can see that it matches our domain type with
-a few exceptions. Since is our binary representation we have to specify a size
+a few exceptions. Since it's our binary representation we have to specify a size
 for our integer type. Also, you'll notice numbers on the right. These are
 essentially field IDs when it's encoded. When you add or remove fields you
 don't need to do a migration like with a relational database. You simply add a

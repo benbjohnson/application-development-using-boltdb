@@ -1,0 +1,703 @@
+App Development Using BoltDB
+22 June 2016
+Tags: boltdb, databases
+
+Ben Johnson
+benbjohnson@yahoo.com
+@benbjohnson
+
+
+* Introduction
+
+* Introduction
+
+Software today is too complex and too slow
+
+CPUs are orders of magnitude faster but our applications are not
+
+We've used SQL databases for decades but is there a better way?
+
+
+* My History
+
+- Oracle DBA for years
+
+- Data visualization & front end developer for a while
+
+- Open source Go developer (BoltDB, go-raft, etc)
+
+
+
+* What is an embedded key/value store?
+
+
+* Embedded
+
+- Compiled into your application (e.g. SQLite)
+- No network connection
+
+
+* Key/Value
+
+- Maps a unique set of bytes ("key") to another set of bytes ("value")
+
+- Essentially, it is a persisted map: `[]byte` ➤ `[]byte`
+
+Some databases let you have multiple maps, sometimes called "buckets"
+
+
+* What embedded databases are there?
+
+Just like relational databases, there are TONS of embedded databases.
+
+*LSM* (Log-Structured Merge Tree)
+
+- Write optimized
+- No support for transactions
+- Examples: LevelDB, RocksDB
+
+*B+tree*
+
+- Read optimized
+- Supports fully serializable ACID transactions
+- Examples: LMDB, BoltDB
+
+
+* Getting started with BoltDB
+
+* Installation
+
+Just type:
+
+  $ go get github.com/boltdb/bolt
+
+And you're ready!
+
+🎉🎉🎉
+
+
+* Cross platform support
+
+Works on:
+
+- Windows
+- Mac OS X
+- Linux
+- ARM
+- iOS
+- Android
+
+
+* Object encoding
+
+* Object encoding
+
+Key/value stores only understand bytes so you must encode objects yourself
+
+Luckily, this is a solved problem:
+
+- Protocol Buffers
+- FlatBuffers
+- MessagePack
+- XML
+- JSON
+- YAML
+
+
+* Protocol Buffers
+
+Created by Google for RPC
+
+Uses a definition language to generate encoders & decoders
+
+.link https://developers.google.com/protocol-buffers/
+
+I use `gogoprotobuf`. It's extremely fast and easy to use.
+
+.link https://github.com/gogo/protobuf
+
+
+* Example application
+
+* Domain Type
+
+We'll focus just on a simple data layer to perform CRUD operations on "users"
+
+	// User represents a user in our system.
+	type User struct {
+		ID       int
+		Username string
+	}
+
+
+* User serialization
+
+Separate out "domain types" from "encoding types"
+
+    internal/
+        internal.proto        // Definition file
+        internal.pb.go        // Generated file
+    store.go
+    store_test.go
+    ...
+      
+
+I use `internal` because it can only be used by my package and it's hidden from godoc.
+
+
+* Protobuf definition
+
+`internal.proto`
+
+	package internal;
+
+	message User {
+		optional int64  ID       = 1;
+		optional string Username = 2;
+	}
+
+- Must specify integer sizes
+- Field IDs provide versioning
+- No migration needed to add or remove fields
+
+
+* Go Generate
+
+Add this line to your main package:
+
+	//go:generate protoc --gogo_out=. internal/internal.proto
+
+Automatically regenerate encoders/decoders:
+
+	$ go generate
+
+
+* Ugly generated code
+
+	package internal
+
+	type User struct {
+		ID               *int64  `protobuf:"varint,1,opt,name=ID" json:"ID,omitempty"`
+		Username         *string `protobuf:"bytes,2,opt,name=Username" json:"Username,omitempty"`
+		XXX_unrecognized []byte  `json:"-"`
+	}
+
+	func (m *User) Reset()                    { *m = User{} }
+	func (m *User) String() string            { return proto.CompactTextString(m) }
+	func (*User) ProtoMessage()               {}
+	func (*User) Descriptor() ([]byte, []int) { return fileDescriptorInternal, []int{0} }
+
+	func (m *User) GetID() int64 {
+		if m != nil && m.ID != nil {
+			return *m.ID
+		}
+		return 0
+	}
+
+	...
+
+
+* stdlib: encoding package
+
+We need to implement marshaling:
+
+	type BinaryMarshaler interface {
+	        MarshalBinary() (data []byte, err error)
+	}
+
+	type BinaryUnmarshaler interface {
+	        UnmarshalBinary(data []byte) error
+	}
+
+.link https://golang.org/pkg/encoding/
+
+
+* BinaryMarshaler
+
+Encode a `*User` to a `[]byte`:
+
+	// MarshalBinary encodes a user to binary format.
+	func (u *User) MarshalBinary() ([]byte, error) {
+		return proto.Marshal(&internal.User{
+			ID:       proto.Int64(int64(u.ID)),
+			Username: proto.String(u.Username),
+		})
+	}
+
+`*User` ➤ `*internal.User` ➤ `[]byte`
+
+
+* BinaryUnmarshaler
+
+Decode from a `[]byte` to a `*User`:
+
+	func (u *User) UnmarshalBinary(data []byte) error {
+		var pb internal.User
+		if err := proto.Unmarshal(data, &pb); err != nil {
+			return err
+		}
+
+		u.ID = int(pb.GetID())
+		u.Username = pb.GetUsername()
+
+		return nil
+	}
+
+`[]byte` ➤ `*internal.User` ➤ `*User`
+
+
+* Data Store
+
+* Data Store
+
+	// Store represents the data storage layer.
+	type Store struct {
+		// Filepath to the data file.
+		Path string
+
+		db *bolt.DB
+	}
+
+* Opening & initialization
+
+	// Open opens and initializes the store.
+	func (s *Store) Open() error {
+		// Open bolt database.
+		db, err := bolt.Open(s.Path, 0666, nil)
+		if err != nil {
+			return err
+		}
+		s.db = db
+
+		// Start a writable transaction.
+		tx, err := s.db.Begin(true)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+
+		// Initialize buckets to guarantee that they exist.
+		tx.CreateBucketIfNotExists([]byte("Users"))
+
+		// Commit the transaction.
+		return tx.Commit()
+	}
+
+* Open
+
+	db, err := bolt.Open(s.Path, 0666, nil)
+	if err != nil {
+		return err
+	}
+
+- Requires a file path & mode
+- Mode uses umask (`0022`) so it ends up being `0644`
+- Additional options available
+
+
+* Initialization
+
+	// Start a writable transaction.
+	tx, err := s.db.Begin(true)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Initialize buckets to guarantee that they exist.
+	tx.CreateBucketIfNotExists([]byte("Users"))
+
+	// Commit the transaction.
+	return tx.Commit()
+
+- Everything must be in a transaction
+- Our "users" bucket will act like a table
+
+
+* Transactions
+
+Read-write transaction
+
+- Only one at a time
+- If rolled back, all changes are undone
+- Only committed if data written and fsync'd
+
+Read-only transactions
+
+- Unlimited number of concurrent transactions
+- Serializable isolation
+- You _must_ rollback all read-only transactions
+
+* Creating buckets
+
+	func (*bolt.Tx) CreateBucketIfNotExists(name []byte) (*bolt.Bucket, error)
+
+- Creates the bucket if it doesn't exist
+- Returns the bucket if it does exist
+- Similiar to CREATE TABLE IF NOT EXISTS
+
+
+* Closing the store
+
+	// Close shuts down the store.
+	func (s *Store) Close() error {
+		return s.db.Close()
+	}
+
+- Waits for pending transactions to finish
+
+
+* CRUD
+
+* Creating a user
+
+* Creating a user
+
+- Start a transaction
+- Create a new id for our user
+- Marshal user to bytes
+- Save bytes to "Users" bucket
+- Commit transaction
+
+* Creating a user
+
+	func (s *Store) CreateUser(u *User) error {
+		tx, err := s.db.Begin(true)
+	
+		// Retrieve bucket.
+		bkt := tx.Bucket([]byte("Users"))
+
+		// The sequence is an autoincrementing integer that is transactionally safe.
+		seq, _ := bkt.NextSequence()
+		u.ID = int(seq)
+
+		// Marshal our user into bytes.
+		buf, err := u.MarshalBinary()
+		if err != nil {
+			return err
+		}
+
+		// Save user to the bucket.
+		if err := bkt.Put(itob(u.ID), buf); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+* Helper function
+
+	// itob encodes v as a big endian integer.
+	func itob(v int) []byte {
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, uint64(v))
+		return buf
+	}
+
+- Use big endian because it is byte sortable
+
+	Encoding 1000:
+
+	Big endian:     00 00 03 E8
+	Little endian:  E8 03 00 00
+
+
+* Autoincrementing sequences
+
+	func (*bolt.Bucket) NextSequence() (uint64, error)
+
+- Starts at 1
+- Transactionally safe
+- Per-bucket sequence
+
+
+* Setting keys
+
+	func (*bolt.Bucket) Put(key, value []byte) error
+
+- Assigns `value` to `key`
+- Creates the key if it doesn't exist
+- Overwrites it if it does exist
+
+
+* Retrieving a user
+
+* Retrieving a user
+
+- Start a read-only transaction
+- Read bytes from bucket for id
+- Unmarshal bytes to a `*User`
+- Return user
+- Rollback transaction
+
+* Retrieving a user
+
+	func (s *Store) User(id int) (*User, error) {
+		// Start a readable transaction.
+		tx, err := s.db.Begin(false)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+
+		// Read encoded user bytes.
+		v := tx.Bucket([]byte("Users")).Get(itob(id))
+		if v == nil {
+			return nil, nil
+		}
+
+		// Unmarshal bytes into a user.
+		var u User
+		if err := u.UnmarshalBinary(v); err != nil {
+			return nil, err
+		}
+
+		return &u, nil
+	}
+
+* Reading values
+
+	func (*bolt.Bucket) Get(key []byte) []byte
+
+- Returns the value for a given key
+- Returns `nil` if key doesn't exist
+
+
+* Retrieving a list of users
+
+* Retrieving a list of users
+
+- Start a read-only transaction
+- Iterate over a bucket using a cursor
+- Unmarshal each value to a `*User`
+- Return users
+- Rollback transaction
+
+* Retrieving a list of users
+
+	func (s *Store) Users() ([]*User, error) {
+		// Start a readable transaction.
+		tx, err := s.db.Begin(false)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+
+		// Create a cursor on the user's bucket.
+		c := tx.Bucket([]byte("Users")).Cursor()
+
+		// Read all users into a slice.
+		var a []*User
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var u User
+			if err := u.UnmarshalBinary(v); err != nil {
+				return nil, err
+			}
+			a = append(a, &u)
+		}
+
+		return a, nil
+	}
+
+* Iterating over buckets
+
+	func (*bolt.Bucket) Cursor() *bolt.Cursor
+
+- Allows forward iteration: First(), Next()
+- Allows backward iteration: Last(), Prev()
+- Allows seeking to a key: Seek()
+- Always iterates keys in sorted order
+
+
+* Updating a user
+
+* Updating a user
+
+- Start a read-write transaction
+- Retrieving existing user value & unmarshal
+- Update user
+- Marshal new user value and save
+- Commit transaction
+
+* Updating a user
+
+	func (s *Store) SetUsername(id int, username string) error {
+		return s.db.Update(func(tx *bolt.Tx) error {
+			bkt := tx.Bucket([]byte("Users"))
+
+			// Retrieve encoded user and decode.
+			var u User
+			if v := bkt.Get(itob(id)); v == nil {
+				return ErrUserNotFound
+			} else if err := u.UnmarshalBinary(v); err != nil {
+				return err
+			}
+
+			// Update user.
+			u.Username = username
+
+			// Encode and save user.
+			if buf, err := u.MarshalBinary(); err != nil {
+				return err
+			} else if err := bkt.Put(itob(id), buf); err != nil {
+				return err
+			}
+
+			return nil
+		})
+	}
+
+* Transaction helper functions in Bolt
+
+	func (*bolt.DB) Update(fn func(tx *bolt.Tx) error) error
+
+- Executes function in scope of a read-write transaction
+- If error is returned, transaction is rolled back
+
+	func (*bolt.DB) View(fn func(tx *bolt.Tx) error) error
+
+- Executes function in scope of a read-only transaction
+
+
+* Deleting a user
+
+* Deleting a user
+
+- Start a read-write transaction
+- Delete key
+- Commit transaction
+
+* Deleting a user
+
+	func (s *Store) DeleteUser(id int) error {
+		return s.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte("Users")).Delete(itob(id))
+		})
+	}
+
+* Delete key
+
+	func (*bolt.Bucket) Delete(key []byte) error
+
+- Removes a key from a bucket
+
+
+
+* BoltDB in Practice
+
+* BoltDB in Practice
+
+- Requires a lot of random access so SSDs are advised
+- Bolt returns byte slices pointing directly to a read-only mmap
+- Byte slices are only valid for the life of a transaction
+- Data is held in the OS page cache so it persists across application restarts
+
+
+* Backup & Restore
+
+- No built-in CLI command for backing up
+- Choose your own adventure
+- Streaming replication coming in the future
+
+
+* Backup & Restore
+
+Transactions implement `io.WriterTo`:
+
+	type WriterTo interface {
+		WriteTo(w Writer) (n int64, err error)
+	}
+
+* HTTP Backup
+
+	func (*Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	    tx, err := db.Begin(false)
+	    if err != nil {
+	        http.Error(w, err.Error(), http.StatusInternalServerError)
+	        return
+	    }
+	    defer tx.Rollback()
+
+	    w.Header().Set("Content-Type", "application/octet-stream")
+	    w.Header().Set("Content-Disposition", `attachment; filename="my.db"`)
+	    w.Header().Set("Content-Length", strconv.Itoa(int(tx.Size())))
+
+	    tx.WriteTo(w)
+	}
+
+
+* Performance
+
+* Benchmarks
+
+These are ballpark estimates!
+
+
+* Write performance
+
+- 2,000 random writes/sec
+- 450,000 sequential, batched writes/sec
+
+* Read performance
+
+If data is hot in memory:
+
+- 1-2µs fetch time
+- Iterate over 20M keys/sec
+
+If data is not hot in memory:
+
+- Depends on your hard drive's speed
+
+
+* Scaling with Bolt
+
+* Scaling with Bolt
+
+- Biggest criticism of embedded databases
+
+
+* Vertical scaling
+
+- Really easy
+- Read transactions scale with number of CPU cores
+
+
+* Horizontal scaling
+
+- Many applications can be sharded (e.g. partitioned by account)
+- One database per partition
+- Possibly use consistent hashing
+- Allows you to simply add machines to rebalance load
+
+* Data integrity in the face of catastrophic failure!
+
+- Windows of data loss need consideration
+- Streaming replication will minimize this issue
+- Frequent backups (e.g. every hour or every 10m)
+- Many applications keep critical financial data in a separate service (e.g Stripe)
+
+* Data integrity in the face of catastrophic failure!
+
+- Backups are FAST!
+- It's just a file
+- 3 - 5 seconds per GB on an SSD
+
+
+* Other fun uses for Bolt
+
+- Message queue
+- Analytics
+- Buckets can be nested to provide interesting data structures
+
+
+* Conclusion
+
+* Conclusion
+
+- BoltDB fits many application use cases
+- Development experience is great
+- Testing experience is great
+- Deployment experience is great
+- Code is not only simple but extremely fast
+
+* Consider using BoltDB on your next project!
