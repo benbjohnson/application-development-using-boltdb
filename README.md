@@ -12,11 +12,6 @@ are both simple and fast. We will see how development and deployment become a
 breeze once you ditch your complex database server.
 
 
-### Target Audience
-
-Go developers who are interested in simplifying their application development.
-
-
 ### Introduction
 
 Software is too complex and too slow. We've seen the speed of CPUs increase
@@ -344,10 +339,6 @@ Stripe so a 10 minute window may be acceptable.
 Again, a Bolt database is simply a file and can be copied extremely quickly.
 Expect a copy to take 3-5 seconds per gigabyte on an SSD.
 
-
-### Other uses for Bolt beyond CRUD
-
-TODO
 
 
 ### Conclusion
